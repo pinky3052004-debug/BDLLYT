@@ -17,325 +17,90 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # CHECKOUT
-      # ============================================================
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ============================================================
-      # INSTALL TOOLS
-      # ============================================================
-
       - name: Install tools
         run: |
           set -e
-
-          echo "=========================================="
-          echo "INSTALLING TOOLS"
-          echo "=========================================="
-
           sudo apt-get update
-
-          sudo apt-get install -y \
-            ffmpeg \
-            curl \
-            jq \
-            unzip \
-            python3-pip
-
+          sudo apt-get install -y ffmpeg curl jq unzip python3-pip
           curl https://rclone.org/install.sh | sudo bash
-
-          echo ""
-          echo "rclone:"
-          rclone version
-
-          echo ""
-          echo "ffmpeg:"
-          ffmpeg -version | head -n 1
-
-          echo ""
-          echo "Python packages:"
           pip3 install --no-cache-dir google-api-python-client google-auth-oauthlib
-
-      # ============================================================
-      # RESTORE RCLONE CONFIG
-      # ============================================================
 
       - name: Restore rclone config
         run: |
           set -e
-
-          echo "=========================================="
-          echo "RESTORING RCLONE CONFIG"
-          echo "=========================================="
-
           mkdir -p "$HOME/.config/rclone"
-
-          printf '%s' '${{ secrets.RCLONE_CONFIG }}' \
-            > "$HOME/.config/rclone/rclone.conf"
-
+          printf '%s' '${{ secrets.RCLONE_CONFIG }}' > "$HOME/.config/rclone/rclone.conf"
           chmod 600 "$HOME/.config/rclone/rclone.conf"
-
-          echo "Rclone config restored."
-
-      # ============================================================
-      # CHECK RCLONE REMOTE
-      # ============================================================
-
-      - name: Test rclone remote
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "TESTING RCLONE"
-          echo "=========================================="
-
-          rclone listremotes
-
-          echo ""
-          echo "Testing remote: ${RCLONE_REMOTE}:"
-
-          rclone lsd "${RCLONE_REMOTE}:" --max-depth 1
-
-      # ============================================================
-      # CHECK GOOGLE DRIVE FOLDER
-      # ============================================================
-
-      - name: Test Google Drive folder
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "TESTING GOOGLE DRIVE FOLDER"
-          echo "=========================================="
-
-          if [ -z "$GOOGLE_DRIVE_FOLDER_ID" ]; then
-            echo "ERROR: GOOGLE_DRIVE_FOLDER_ID is empty."
-            exit 1
-          fi
-
-          echo "Folder ID configured."
-
-          rclone lsf \
-            "${RCLONE_REMOTE}:" \
-            --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" \
-            --files-only \
-            --format "p"
-
-      # ============================================================
-      # PREPARE already_live.txt
-      # ============================================================
 
       - name: Prepare already live record
         run: |
-          set -e
-
-          echo "=========================================="
-          echo "PREPARING already_live.txt"
-          echo "=========================================="
-
           if [ ! -f already_live.txt ]; then
             touch already_live.txt
           fi
-
-          echo ""
-          echo "Already live:"
-          cat already_live.txt || true
-
-      # ============================================================
-      # FIND NEXT ID (Using local work/main.json from repository)
-      # ============================================================
 
       - name: Find next video
         id: select
         run: |
           set -e
+          mkdir -p work
 
-          echo "=========================================="
-          echo "FINDING NEXT VIDEO"
-          echo "=========================================="
+          # work folder ထဲမှာရှိတဲ့ mp4 ဖိုင်များကို ရှာပြီး ID များကို ထုတ်ယူမည် (ဥပမာ 00001.mp4 မှ 1 ကို ယူမည်)
+          rclone lsf "${RCLONE_REMOTE}:" \
+            --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" \
+            --files-only \
+            --include "*.mp4" \
+            | sed 's/\.mp4$//' | sed 's/^0*//' | sed 's/^$/0/' \
+            | sort -n > work/all_ids.txt
 
-          if [ ! -f work/main.json ]; then
-            echo "ERROR: work/main.json not found in repository."
-            exit 1
-          fi
-
-          echo ""
-          echo "main.json:"
-          cat work/main.json
-          echo ""
-
-          # Validate JSON
-          jq empty work/main.json
-          echo "JSON validation: OK"
-
-          jq -r '.[].id' work/main.json \
-            | sort -n \
-            > work/all_ids.txt
-
-          echo ""
-          echo "IDs in main.json:"
+          echo "Found video IDs in Google Drive:"
           cat work/all_ids.txt
 
           NEXT_ID=""
-
           while IFS= read -r ID; do
-
-            if ! grep -Fxq "$ID" already_live.txt; then
-
+            if [ -n "$ID" ] && ! grep -Fxq "$ID" already_live.txt; then
               NEXT_ID="$ID"
               break
-
             fi
-
           done < work/all_ids.txt
 
           if [ -z "$NEXT_ID" ]; then
-
-            echo ""
-            echo "=========================================="
-            echo "NO MORE VIDEOS"
-            echo "=========================================="
-
             echo "has_next=false" >> "$GITHUB_OUTPUT"
-
             exit 0
-
           fi
 
           PADDED_ID="$(printf '%05d' "$NEXT_ID")"
-
-          VIDEO_FILE="${PADDED_ID}.mp4"
-          THUMB_FILE="${PADDED_ID}.jpg"
-
-          echo ""
-          echo "Selected ID     : $NEXT_ID"
-          echo "Padded ID       : $PADDED_ID"
-          echo "Video           : $VIDEO_FILE"
-          echo "Thumbnail       : $THUMB_FILE"
-
-          TITLE="$(jq -r \
-            --arg id "$NEXT_ID" \
-            '.[] | select(.id == $id) | .title' \
-            work/main.json)"
-
-          DESCRIPTION="$(jq -r \
-            --arg id "$NEXT_ID" \
-            '.[] | select(.id == $id) | .description' \
-            work/main.json)"
-
-          TAGS_JSON="$(jq -c \
-            --arg id "$NEXT_ID" \
-            '.[] | select(.id == $id) | .video_tags' \
-            work/main.json)"
-
-          if [ -z "$TITLE" ] || [ "$TITLE" = "null" ]; then
-            echo "ERROR: title not found for id $NEXT_ID"
-            exit 1
-          fi
-
-          if [ -z "$DESCRIPTION" ] || [ "$DESCRIPTION" = "null" ]; then
-            echo "ERROR: description not found for id $NEXT_ID"
-            exit 1
-          fi
-
-          if [ -z "$TAGS_JSON" ] || [ "$TAGS_JSON" = "null" ]; then
-            echo "ERROR: video_tags not found for id $NEXT_ID"
-            exit 1
-          fi
-
-          printf '%s' "$TITLE" \
-            > work/title.txt
-
-          printf '%s' "$DESCRIPTION" \
-            > work/description.txt
-
-          printf '%s' "$TAGS_JSON" \
-            > work/tags.json
-
           echo "has_next=true" >> "$GITHUB_OUTPUT"
           echo "id=$NEXT_ID" >> "$GITHUB_OUTPUT"
           echo "padded_id=$PADDED_ID" >> "$GITHUB_OUTPUT"
-          echo "video=$VIDEO_FILE" >> "$GITHUB_OUTPUT"
-          echo "thumbnail=$THUMB_FILE" >> "$GITHUB_OUTPUT"
+          echo "video=${PADDED_ID}.mp4" >> "$GITHUB_OUTPUT"
+          echo "thumbnail=${PADDED_ID}.jpg" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # CHECK SELECTED FILES IN GOOGLE DRIVE
-      # ============================================================
-
-      - name: Check selected files
+      - name: Check selected files in Google Drive
         if: steps.select.outputs.has_next == 'true'
         run: |
           set -e
-
           VIDEO="${{ steps.select.outputs.video }}"
           THUMB="${{ steps.select.outputs.thumbnail }}"
 
-          echo "=========================================="
-          echo "CHECKING GOOGLE DRIVE FILES"
-          echo "=========================================="
-
-          if ! rclone lsf \
-            "${RCLONE_REMOTE}:" \
-            --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" \
-            --files-only \
-            --include "$VIDEO" \
-            | grep -Fxq "$VIDEO"; then
-
-            echo "ERROR: $VIDEO not found in Google Drive."
-            exit 1
-          fi
-
-          if ! rclone lsf \
-            "${RCLONE_REMOTE}:" \
-            --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" \
-            --files-only \
-            --include "$THUMB" \
-            | grep -Fxq "$THUMB"; then
-
-            echo "ERROR: $THUMB not found in Google Drive."
-            exit 1
-          fi
-
-          echo "Files verified successfully."
-
-      # ============================================================
-      # DOWNLOAD VIDEO & THUMBNAIL
-      # ============================================================
+          rclone lsf "${RCLONE_REMOTE}:" --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" --files-only --include "$VIDEO" | grep -Fxq "$VIDEO"
+          rclone lsf "${RCLONE_REMOTE}:" --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" --files-only --include "$THUMB" | grep -Fxq "$THUMB"
 
       - name: Download video and thumbnail
         if: steps.select.outputs.has_next == 'true'
         run: |
           set -e
-
           VIDEO="${{ steps.select.outputs.video }}"
           THUMB="${{ steps.select.outputs.thumbnail }}"
 
-          echo "=========================================="
-          echo "DOWNLOADING ASSETS"
-          echo "=========================================="
+          rclone copyto "${RCLONE_REMOTE}:${VIDEO}" "work/${VIDEO}" --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" --progress
+          rclone copyto "${RCLONE_REMOTE}:${THUMB}" "work/${THUMB}" --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" --progress
 
-          rclone copyto \
-            "${RCLONE_REMOTE}:${VIDEO}" \
-            "work/${VIDEO}" \
-            --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" \
-            --progress
-
-          rclone copyto \
-            "${RCLONE_REMOTE}:${THUMB}" \
-            "work/${THUMB}" \
-            --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID" \
-            --progress
-
-      # ============================================================
-      # UPDATE YOUTUBE METADATA & THUMBNAIL VIA API
-      # ============================================================
-
-      - name: Update YouTube Metadata and Thumbnail
+      - name: Update YouTube Metadata and Thumbnail (Default Values)
         if: steps.select.outputs.has_next == 'true'
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
@@ -344,15 +109,8 @@ jobs:
           YOUTUBE_BROADCAST_ID: ${{ secrets.YOUTUBE_BROADCAST_ID }}
           NEXT_ID: ${{ steps.select.outputs.id }}
         run: |
-          set -e
-
-          echo "=========================================="
-          echo "UPDATING YOUTUBE METADATA VIA API"
-          echo "=========================================="
-
           python3 - << 'EOF'
           import os
-          import json
           from google.oauth2.credentials import Credentials
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
@@ -363,162 +121,63 @@ jobs:
           broadcast_id = os.environ.get("YOUTUBE_BROADCAST_ID")
           next_id = os.environ.get("NEXT_ID")
 
-          with open("work/main.json", "r", encoding="utf-8") as f:
-              data = json.load(f)
-
-          video_item = None
-          for item in data:
-              if str(item.get("id")) == str(next_id):
-                  video_item = item
-                  break
-
-          if not video_item:
-              print(f"Error: ID {next_id} not found in main.json")
-              exit(1)
-
-          title = video_item.get("title")
-          description = video_item.get("description")
-          tags = video_item.get("video_tags", [])
-
-          creds = Credentials(
-              None,
-              refresh_token=refresh_token,
-              client_id=client_id,
-              client_secret=client_secret,
-              token_uri="https://oauth2.googleapis.com/token"
+          # Default တန်ဖိုးများ သတ်မှတ်ခြင်း
+          title = "နံနက်ခင်းမှစ ကံပွင့်လာဘ်ပွင့် ​​စီးပွားတက်စေရန် ပဋ္ဌာန်းပါဠိ မဟာသမယသုတ် တရားတော် ☸️🙏☸️❤️🙏❤️🔴🌷🔴☸️"
+          description = (
+              "မင်္ဂလာပါ ဓမ္မမိတ်ဆွေများ\n\n"
+              "တရားချစ်ခင်သူတော်စင်များ ကိုယ်စိတ်နှဖြာ ကျန်းမာကြပါစေ ချမ်းသာကြပါစေ "
+              "ဘေးရန်းခပ်သိမ်းကင်းငြိမ်းကြပါစေ ဘေဥပဒ်အန္တရာယ်အသွယ်အသွယ်မှကင်းဝေးကြပါစေ။\n\n"
+              "ပဋ္ဌာန်းတရားတော်များကို နာယူမှတ်သား ရွတ်ဖတ်ရခြင်းအကျိုးကျေးဇူးများသည် အလွန်တရာမှ "
+              "မွန်မြတ်သော အရာတစ်ခု ဖြစ်ပါသည်... နာယူပူဇော်ခြင်းဖြင့် ကုသိုလ်ယူကြပါနော်။\n\n"
+              "✅ Subscribe လုပ်ပြီး တရားတော်များကို အတူတူ နာယူပူဇော်ကြပါစို့။\n\n"
+              "#ကံပွင့်လာဘ်ပွင့် #မဟာသမယသုတ် #ပဋ္ဌာန်းပါဠိတော် #ပရိတ်ကြီး၁၁သုတ် #မေတ္တာပို့တရားတော် #dhammabd #တရားတော်များ"
           )
+          tags = [
+              "ကံပွင့်လာဘ်ပွင့်", "မဟာသမယသုတ်တရားတော်", "ပဋ္ဌာန်းပါဠိတော်", "ပရိတ်ကြီး၁၁သုတ်", 
+              "စီးပွားတက်တရားတော်", "နံနက်ခင်းတရားတော်", "မေတ္တာပို့တရားတော်", "ပါချုပ်ဆရာတော်ဘုရားကြီးတရားတော်များ", 
+              "မင်းကွန်းဆရာတော်တရား", "ဓမ္မစကြာတရားတော်", "ဂုဏ်တော်ကိုးပါး", "လာဘ်ပွင့်ဂါထာတော်", 
+              "အစွမ်းထက်ဂါထာတော်", "ဘေးအန္တရာယ်ကင်းပရိတ်တရားတော်", "ပဌာန်းဒေသနာတော်", "တရားတော်များ 2026", 
+              "တရားတော်များ", "dhamma channel myanmar", "buddha chanting myanmar", "daily dhamma teaching", 
+              "myanmar buddhist prayer", "morning prayer blessings", "pali chanting for peace", "dhammatalk", "tayar taw myanmar"
+          ]
 
+          creds = Credentials(None, refresh_token=refresh_token, client_id=client_id, client_secret=client_secret, token_uri="https://oauth2.googleapis.com/token")
           youtube = build("youtube", "v3", credentials=creds)
 
-          # Update Title & Description
           youtube.liveBroadcasts().update(
               part="snippet",
-              body={
-                  "id": broadcast_id,
-                  "snippet": {
-                      "title": title,
-                      "description": description
-                  }
-              }
+              body={"id": broadcast_id, "snippet": {"title": title, "description": description}}
           ).execute()
-          print("Broadcast metadata updated.")
 
-          # Update Tags
           try:
               youtube.videos().update(
                   part="snippet",
-                  body={
-                      "id": broadcast_id,
-                      "snippet": {
-                          "title": title,
-                          "description": description,
-                          "categoryId": "24",
-                          "tags": tags
-                      }
-                  }
+                  body={"id": broadcast_id, "snippet": {"title": title, "description": description, "categoryId": "24", "tags": tags}}
               ).execute()
-              print("Video tags updated.")
           except Exception as e:
-              print(f"Warning: Tags update failed: {e}")
+              print(f"Tags update warning: {e}")
 
-          # Update Thumbnail
           padded_id = f"{int(next_id):05d}"
           thumb_path = f"work/{padded_id}.jpg"
-
           if os.path.exists(thumb_path):
-              youtube.thumbnails().set(
-                  videoId=broadcast_id,
-                  media_body=MediaFileUpload(thumb_path)
-              ).execute()
-              print("Thumbnail uploaded.")
+              youtube.thumbnails().set(videoId=broadcast_id, media_body=MediaFileUpload(thumb_path)).execute()
           EOF
-
-      # ============================================================
-      # START YOUTUBE LIVE
-      # ============================================================
 
       - name: Start YouTube Live
         if: steps.select.outputs.has_next == 'true'
         run: |
-          set -e
-
           VIDEO="work/${{ steps.select.outputs.video }}"
-
-          echo "=========================================="
-          echo "STARTING YOUTUBE LIVE STREAM"
-          echo "=========================================="
-
-          ffmpeg \
-            -hide_banner \
-            -loglevel info \
-            -re \
-            -i "$VIDEO" \
-            -c:v libx264 \
-            -preset veryfast \
-            -tune zerolatency \
-            -pix_fmt yuv420p \
-            -r 30 \
-            -g 60 \
-            -keyint_min 60 \
-            -b:v 4500k \
-            -maxrate 4500k \
-            -bufsize 9000k \
-            -c:a aac \
-            -b:a 128k \
-            -ar 44100 \
-            -f flv \
-            "rtmps://a.rtmps.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
-
-      # ============================================================
-      # MARK AS LIVE & COMMIT
-      # ============================================================
+          ffmpeg -hide_banner -loglevel info -re -i "$VIDEO" -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -r 30 -g 60 -keyint_min 60 -b:v 4500k -maxrate 4500k -bufsize 9000k -c:a aac -b:a 128k -ar 44100 -f flv "rtmps://a.rtmps.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
 
       - name: Mark as already live
         if: success() && steps.select.outputs.has_next == 'true'
         run: |
-          set -e
-
           ID="${{ steps.select.outputs.id }}"
-
           if ! grep -Fxq "$ID" already_live.txt; then
             echo "$ID" >> already_live.txt
           fi
-
           sort -n -o already_live.txt already_live.txt
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git add already_live.txt
-
-          if git diff --cached --quiet; then
-            echo "Nothing to commit."
-          else
-            git commit --m "Mark ${{ steps.select.outputs.id }} as already live"
-            git push
-          fi
-
-      # ============================================================
-      # FINAL SUMMARY
-      # ============================================================
-
-      - name: Final summary
-        if: always()
-        run: |
-          echo ""
-          echo "=================================================="
-          echo "FINAL SUMMARY"
-          echo "=================================================="
-
-          if [ "${{ steps.select.outputs.has_next }}" = "true" ]; then
-            echo "ID        : ${{ steps.select.outputs.id }}"
-            echo "Video     : ${{ steps.select.outputs.video }}"
-            echo "Thumbnail : ${{ steps.select.outputs.thumbnail }}"
-          else
-            echo "No video selected."
-          fi
-
-          echo ""
-          echo "Already Live:"
-          cat already_live.txt || true
-          echo "=================================================="
+          git diff --cached --quiet || (git commit -m "Mark $ID as already live" && git push)
