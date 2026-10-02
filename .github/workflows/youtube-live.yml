@@ -127,41 +127,6 @@ jobs:
             --format "p"
 
       # ============================================================
-      # DOWNLOAD main.json
-      # ============================================================
-
-      - name: Download main.json
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "DOWNLOADING main.json"
-          echo "=========================================="
-
-          mkdir -p work
-
-          rclone copyto \
-            "${RCLONE_REMOTE}:main.json" \
-            "work/main.json" \
-            --drive-root-folder-id "$GOOGLE_DRIVE_FOLDER_ID"
-
-          if [ ! -f work/main.json ]; then
-            echo "ERROR: main.json was not downloaded."
-            exit 1
-          fi
-
-          echo ""
-          echo "main.json:"
-          cat work/main.json
-
-          echo ""
-
-          # Validate JSON
-          jq empty work/main.json
-
-          echo "JSON validation: OK"
-
-      # ============================================================
       # PREPARE already_live.txt
       # ============================================================
 
@@ -182,7 +147,7 @@ jobs:
           cat already_live.txt || true
 
       # ============================================================
-      # FIND NEXT ID
+      # FIND NEXT ID (Using local work/main.json from repository)
       # ============================================================
 
       - name: Find next video
@@ -193,6 +158,20 @@ jobs:
           echo "=========================================="
           echo "FINDING NEXT VIDEO"
           echo "=========================================="
+
+          if [ ! -f work/main.json ]; then
+            echo "ERROR: work/main.json not found in repository."
+            exit 1
+          fi
+
+          echo ""
+          echo "main.json:"
+          cat work/main.json
+          echo ""
+
+          # Validate JSON
+          jq empty work/main.json
+          echo "JSON validation: OK"
 
           jq -r '.[].id' work/main.json \
             | sort -n \
@@ -515,7 +494,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "Nothing to commit."
           else
-            git commit -m "Mark ${{ steps.select.outputs.id }} as already live"
+            git commit --m "Mark ${{ steps.select.outputs.id }} as already live"
             git push
           fi
 
